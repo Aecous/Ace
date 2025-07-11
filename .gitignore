@@ -2,6 +2,8 @@
 fscan
 fscan_test
 fscan_enhanced
+fscan_optimized
+fscan_gogo
 *.exe
 *.out
 

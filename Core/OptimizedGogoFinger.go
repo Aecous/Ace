@@ -62,10 +62,10 @@ func (f *OptimizedGogoFinger) identify() *GogoFingerResult {
 	return nil
 }
 
-// readBannerFast 快速读取Banner - 优化超时时间
+// readBannerFast 快速读取Banner - 进一步优化超时
 func (f *OptimizedGogoFinger) readBannerFast() {
-	// 设置较短的读取超时(500ms)
-	f.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	// 设置更短的读取超时(300ms) - 学习gogo的快速探测
+	f.conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 
 	buffer := make([]byte, 1024)
 	n, _ := f.conn.Read(buffer)
@@ -154,20 +154,12 @@ func (f *OptimizedGogoFinger) testSocketFinger(finger SocketFinger) bool {
 	return false
 }
 
-// looksLikeHTTP 判断是否像HTTP服务
+// looksLikeHTTP 判断是否像HTTP服务 - 优化判断逻辑
 func (f *OptimizedGogoFinger) looksLikeHTTP() bool {
-	// 检查常见HTTP端口
-	httpPorts := []int{80, 443, 8080, 8443, 8000, 8001, 8008, 8888, 9000, 9080, 7001, 7002}
-	for _, p := range httpPorts {
-		if p == f.port {
-			return true
-		}
-	}
-
-	// 检查Banner内容
+	// 1. 快速Banner检查（优先，更准确）
 	if f.banner != "" {
 		lowerBanner := strings.ToLower(f.banner)
-		httpKeywords := []string{"http/", "html", "server:", "content-type:", "connection:"}
+		httpKeywords := []string{"http/", "html", "server:", "content-type:", "connection:", "<!doctype", "<html"}
 		for _, keyword := range httpKeywords {
 			if strings.Contains(lowerBanner, keyword) {
 				return true
@@ -175,26 +167,36 @@ func (f *OptimizedGogoFinger) looksLikeHTTP() bool {
 		}
 	}
 
+	// 2. 检查常见HTTP端口（作为辅助判断）
+	httpPorts := []int{80, 443, 8080, 8443, 8000, 8001, 8008, 8888, 9000, 9080, 7001, 7002}
+	for _, p := range httpPorts {
+		if p == f.port {
+			return true
+		}
+	}
+
 	return false
 }
 
-// probeHTTPOnExistingConnection 在现有连接上进行HTTP探测
+// probeHTTPOnExistingConnection 在现有连接上进行HTTP探测 - 优化超时和协议识别
 func (f *OptimizedGogoFinger) probeHTTPOnExistingConnection() *GogoFingerResult {
 	// 如果Banner看起来已经是HTTP响应，直接分析
 	if strings.Contains(f.banner, "HTTP/") {
 		return f.analyzeHTTPResponse(f.banner, "http")
 	}
 
-	// 否则发送HTTP请求
+	// 否则发送HTTP请求 - 使用更短的超时（学习gogo）
 	httpRequest := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nUser-Agent: fscan/2.0\r\nConnection: close\r\n\r\n", f.host)
 
-	f.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	// 优化：使用1秒超时而不是3秒（学习gogo的快速探测）
+	f.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 	_, err := f.conn.Write([]byte(httpRequest))
 	if err != nil {
 		return nil
 	}
 
-	f.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	// 优化：使用1秒读取超时，快速失败
+	f.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	response, err := io.ReadAll(f.conn)
 	if err != nil {
 		return nil
@@ -208,7 +210,7 @@ func (f *OptimizedGogoFinger) probeHTTPOnExistingConnection() *GogoFingerResult 
 	return nil
 }
 
-// analyzeHTTPResponse 分析HTTP响应
+// analyzeHTTPResponse 分析HTTP响应 - 修复协议识别
 func (f *OptimizedGogoFinger) analyzeHTTPResponse(response, scheme string) *GogoFingerResult {
 	// 快速匹配HTTP指纹
 	for _, finger := range GogoEngine.HTTPFingers {
@@ -217,7 +219,7 @@ func (f *OptimizedGogoFinger) analyzeHTTPResponse(response, scheme string) *Gogo
 				Service:    finger.Name,
 				Product:    finger.Name,
 				Banner:     f.extractHTTPBanner(response),
-				Protocol:   "tcp",
+				Protocol:   scheme, // 修复：使用实际的协议而不是硬编码"tcp"
 				Port:       f.port,
 				Confidence: finger.Confidence,
 				ExtraInfo:  make(map[string]string),
@@ -229,29 +231,32 @@ func (f *OptimizedGogoFinger) analyzeHTTPResponse(response, scheme string) *Gogo
 				result.ExtraInfo["server"] = server
 			}
 
+			// 提取状态码
+			if statusCode := f.extractStatusCode(response); statusCode != "" {
+				result.ExtraInfo["status_code"] = statusCode
+			}
+
 			return result
 		}
 	}
 
-	// 通用HTTP服务
-	result := &GogoFingerResult{
+	// 如果没有匹配到特定指纹，返回通用HTTP结果
+	statusCode := f.extractStatusCode(response)
+	server := f.extractServerHeader(response)
+
+	return &GogoFingerResult{
 		Service:    "http",
 		Product:    "HTTP Server",
 		Banner:     f.extractHTTPBanner(response),
-		Protocol:   "tcp",
+		Protocol:   scheme, // 修复：使用实际的协议
 		Port:       f.port,
-		Confidence: 5,
-		ExtraInfo:  make(map[string]string),
+		Confidence: 6,
+		ExtraInfo: map[string]string{
+			"status_code": statusCode,
+			"server":      server,
+		},
 		FingerType: "http",
 	}
-
-	if server := f.extractServerHeader(response); server != "" {
-		result.ExtraInfo["server"] = server
-		result.Product = server
-		result.Confidence = 7
-	}
-
-	return result
 }
 
 // matchHTTPFinger 匹配HTTP指纹
@@ -447,6 +452,21 @@ func (f *OptimizedGogoFinger) decodeProbe(probe string) []byte {
 		return data
 	}
 	return []byte(probe)
+}
+
+// extractStatusCode 提取HTTP状态码 - 新增辅助函数
+func (f *OptimizedGogoFinger) extractStatusCode(response string) string {
+	// 学习gogo的GetStatusCode函数
+	if len(response) > 12 && strings.HasPrefix(response, "HTTP") {
+		lines := strings.Split(response, "\n")
+		if len(lines) > 0 {
+			parts := strings.Fields(lines[0])
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+		}
+	}
+	return ""
 }
 
 // ===== 批量Favicon检测（可选功能，减少网络请求） =====

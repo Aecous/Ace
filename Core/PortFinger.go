@@ -4,16 +4,19 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"fmt"
-	"github.com/shadow1ng/fscan/Common"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/shadow1ng/fscan/Common"
 )
 
 //go:embed nmap-service-probes.txt
 var ProbeString string
 
 var v VScan // 改为VScan类型而不是指针
+
+// ===== 保留结构定义以兼容现有代码，但不再使用 =====
 
 type VScan struct {
 	Exclude        string
@@ -64,29 +67,29 @@ type Extras struct {
 	CPE             string
 }
 
+// ===== 预定义的基础探测器（空对象，不再使用） =====
+var (
+	null   = new(Probe) // 空探测器,用于基本协议识别
+	common = new(Probe) // 通用探测器,用于常见服务识别
+)
+
 func init() {
-	Common.LogDebug("开始初始化全局变量")
+	// 注释：不再初始化16K行的nmap指纹库，改用gogo轻量级系统
+	// 这样可以大幅提升启动速度和内存占用
+	Common.LogInfo("已跳过nmap指纹库初始化，使用gogo轻量级系统")
 
-	v = VScan{} // 直接初始化VScan结构体
-	v.Init()
-
-	// 获取并检查 NULL 探测器
-	if nullProbe, ok := v.ProbesMapKName["NULL"]; ok {
-		Common.LogDebug(fmt.Sprintf("成功获取NULL探测器，Data长度: %d", len(nullProbe.Data)))
-		null = &nullProbe
-	} else {
-		Common.LogDebug("警告: 未找到NULL探测器")
+	// 初始化空的数据结构以避免空指针错误
+	v = VScan{
+		ProbesMapKName: make(map[string]Probe),
+		AllProbes:      []Probe{},
+		UdpProbes:      []Probe{},
+		Probes:         []Probe{},
 	}
 
-	// 获取并检查 GenericLines 探测器
-	if commonProbe, ok := v.ProbesMapKName["GenericLines"]; ok {
-		Common.LogDebug(fmt.Sprintf("成功获取GenericLines探测器，Data长度: %d", len(commonProbe.Data)))
-		common = &commonProbe
-	} else {
-		Common.LogDebug("警告: 未找到GenericLines探测器")
-	}
-
-	Common.LogDebug("全局变量初始化完成")
+	// === 原有复杂初始化代码已注释，节省大量内存和启动时间 ===
+	// v.parseProbesFromContent(ProbeString)  // 这里加载16K行数据！
+	// v.parseProbesToMapKName()
+	// v.SetusedProbes()
 }
 
 // 解析指令语法,返回指令结构
@@ -629,7 +632,7 @@ func (m *Match) MatchPattern(response []byte) bool {
 		Common.LogDebug(fmt.Sprintf("匹配成功，找到 %d 个匹配项", len(foundItems)))
 		return true
 	}
-	
+
 	return false
 }
 

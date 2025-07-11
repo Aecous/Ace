@@ -902,6 +902,7 @@ var (
 	DisablePing            bool   // 是否禁用主机存活性检测
 	UsePing                bool   // 是否使用ICMP Ping检测主机存活
 	EnableFingerprint      bool   // 是否启用gogo风格的服务指纹识别
+	EnableGogoStyle        bool   // 是否启用gogo风格的端口喷洒扫描（高性能模式）
 	LocalMode              bool   // 是否启用本地信息收集模式
 	EnableEnhancedPortScan bool   // 是否启用增强端口扫描（包含Banner获取和服务识别）
 

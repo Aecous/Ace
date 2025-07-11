@@ -67,64 +67,61 @@ func EnhancedPortScan(hosts []string, ports string, timeout int64) []string {
 				atomic.AddInt64(&count, 1)
 				aliveMap.Store(addr, struct{}{})
 
+				// 优化的Gogo风格服务指纹识别 - 复用连接避免重复
+				var result *GogoFingerResult
+				if Common.EnableFingerprint {
+					result = OptimizedIdentifyService(host, port, conn, to)
+				}
+
 				// 关闭连接
 				conn.Close()
 
-				// 简单的端口开放日志
-				Common.LogInfo(fmt.Sprintf("端口开放 %s", addr))
+				if result != nil {
+					// 优化：根据识别结果使用正确的协议前缀（学习gogo）
+					protocol := result.Protocol
+					if protocol == "" {
+						protocol = "tcp" // 默认值
+					}
 
-				// 保存端口扫描结果
-				Common.SaveResult(&Common.ScanResult{
-					Time: time.Now(), Type: Common.PORT, Target: host,
-					Status: "open", Details: map[string]interface{}{"port": port},
-				})
+					// 构建结果详情
+					details := map[string]interface{}{
+						"port":       port,
+						"service":    result.Service,
+						"confidence": result.Confidence,
+						"type":       result.FingerType,
+						"protocol":   protocol, // 添加协议信息
+					}
 
-				// === 指纹识别模块已暂时注释 ===
-				// // 优化的Gogo风格服务指纹识别 - 复用连接避免重复
-				// var result *GogoFingerResult
-				// if Common.EnableFingerprint {
-				//     result = OptimizedIdentifyService(host, port, conn, to)
-				// }
-				//
-				// if result != nil {
-				//     // 构建结果详情
-				//     details := map[string]interface{}{
-				//         "port":       port,
-				//         "service":    result.Service,
-				//         "confidence": result.Confidence,
-				//         "type":       result.FingerType,
-				//     }
-				//
-				//     if result.Product != "" {
-				//         details["product"] = result.Product
-				//     }
-				//     if result.Version != "" {
-				//         details["version"] = result.Version
-				//     }
-				//     if result.Banner != "" {
-				//         details["banner"] = strings.TrimSpace(result.Banner)
-				//     }
-				//     for k, v := range result.ExtraInfo {
-				//         if v != "" {
-				//             details[k] = v
-				//         }
-				//     }
-				//
-				//     // 保存服务结果
-				//     Common.SaveResult(&Common.ScanResult{
-				//         Time: time.Now(), Type: Common.SERVICE, Target: host,
-				//         Status: "identified", Details: details,
-				//     })
-				//
-				//     // 记录服务信息 - 使用gogo风格的格式化输出
-				//     serviceInfo := result.FormatResult()
-				//     if serviceInfo != "" {
-				//         Common.LogInfo(fmt.Sprintf("服务识别 %s => %s", addr, serviceInfo))
-				//     }
-				// } else {
-				//     // 没有识别到服务，但端口开放
-				//     Common.LogInfo(fmt.Sprintf("端口开放 %s", addr))
-				// }
+					if result.Product != "" {
+						details["product"] = result.Product
+					}
+					if result.Version != "" {
+						details["version"] = result.Version
+					}
+					if result.Banner != "" {
+						details["banner"] = strings.TrimSpace(result.Banner)
+					}
+					for k, v := range result.ExtraInfo {
+						if v != "" {
+							details[k] = v
+						}
+					}
+
+					// 保存服务结果
+					Common.SaveResult(&Common.ScanResult{
+						Time: time.Now(), Type: Common.SERVICE, Target: host,
+						Status: "identified", Details: details,
+					})
+
+					// 记录服务信息 - 使用gogo风格的格式化输出，协议前缀正确
+					serviceInfo := result.FormatResult()
+					if serviceInfo != "" {
+						Common.LogInfo(fmt.Sprintf("服务识别 %s://%s => %s", protocol, addr, serviceInfo))
+					}
+				} else {
+					// 没有识别到服务，但端口开放
+					Common.LogInfo(fmt.Sprintf("端口开放 %s", addr))
+				}
 
 				return nil
 			})
@@ -200,61 +197,64 @@ func FastPortScanWithBanner(hosts []string, ports string, timeout int64) []strin
 				aliveMap.Store(addr, struct{}{})
 				Common.PerfMonitor.RecordPacket(true)
 
+				// 优化的Gogo风格的端口和服务识别 - 复用连接
+				var result *GogoFingerResult
+				if Common.EnableFingerprint {
+					result = OptimizedIdentifyService(host, port, conn, to)
+				}
+
 				// 关闭连接
 				conn.Close()
 
-				// 简单的端口开放输出
-				Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+				if Common.EnableFingerprint {
+					if result != nil {
+						// 优化：根据识别结果使用正确的协议前缀（学习gogo）
+						protocol := result.Protocol
+						if protocol == "" {
+							protocol = "tcp" // 默认值
+						}
 
-				// === 指纹识别模块已暂时注释 ===
-				// // 优化的Gogo风格的端口和服务识别 - 复用连接
-				// var result *GogoFingerResult
-				// if Common.EnableFingerprint {
-				//     result = OptimizedIdentifyService(host, port, conn, to)
-				// }
-				//
-				// if Common.EnableFingerprint {
-				//     if result != nil {
-				//         // gogo风格输出: [+] tcp://host:port  focus:service:status  [open] response [ info: ... ]
-				//         serviceInfo := result.FormatResult()
-				//         Common.LogInfo(fmt.Sprintf("[+] tcp://%s  %s", addr, serviceInfo))
-				//
-				//         // 构建详细结果数据
-				//         details := map[string]interface{}{
-				//             "port":       port,
-				//             "service":    result.Service,
-				//             "confidence": result.Confidence,
-				//             "type":       result.FingerType,
-				//         }
-				//
-				//         if result.Product != "" {
-				//             details["product"] = result.Product
-				//         }
-				//         if result.Version != "" {
-				//             details["version"] = result.Version
-				//         }
-				//         if result.Banner != "" {
-				//             details["banner"] = strings.TrimSpace(result.Banner)
-				//         }
-				//         for k, v := range result.ExtraInfo {
-				//             if v != "" {
-				//                 details[k] = v
-				//             }
-				//         }
-				//
-				//         // 保存服务结果
-				//         Common.SaveResult(&Common.ScanResult{
-				//             Time: time.Now(), Type: Common.SERVICE, Target: host,
-				//             Status: "identified", Details: details,
-				//         })
-				//     } else {
-				//         // 没有识别到服务，但端口开放 - 类似gogo的简单输出
-				//         Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
-				//     }
-				// } else {
-				//     // 未启用指纹识别时的基础输出
-				//     Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
-				// }
+						// gogo风格输出: [+] protocol://host:port  focus:service:status  [open] response [ info: ... ]
+						serviceInfo := result.FormatResult()
+						Common.LogInfo(fmt.Sprintf("[+] %s://%s  %s", protocol, addr, serviceInfo))
+
+						// 构建详细结果数据
+						details := map[string]interface{}{
+							"port":       port,
+							"service":    result.Service,
+							"confidence": result.Confidence,
+							"type":       result.FingerType,
+							"protocol":   protocol, // 添加协议信息
+						}
+
+						if result.Product != "" {
+							details["product"] = result.Product
+						}
+						if result.Version != "" {
+							details["version"] = result.Version
+						}
+						if result.Banner != "" {
+							details["banner"] = strings.TrimSpace(result.Banner)
+						}
+						for k, v := range result.ExtraInfo {
+							if v != "" {
+								details[k] = v
+							}
+						}
+
+						// 保存服务结果
+						Common.SaveResult(&Common.ScanResult{
+							Time: time.Now(), Type: Common.SERVICE, Target: host,
+							Status: "identified", Details: details,
+						})
+					} else {
+						// 没有识别到服务，但端口开放 - 类似gogo的简单输出
+						Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+					}
+				} else {
+					// 未启用指纹识别时的基础输出
+					Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+				}
 
 				// 基础端口记录（保持原有功能）
 				Common.SaveResult(&Common.ScanResult{
@@ -280,14 +280,174 @@ func FastPortScanWithBanner(hosts []string, ports string, timeout int64) []strin
 	return aliveAddrs
 }
 
-// performProtocolProbing 执行协议探测 - 指纹识别已暂时注释
-// 此函数保留用于向后兼容
+// GogoStylePortScan gogo风格的端口喷洒扫描 - 按端口批量扫描提升性能
+func GogoStylePortScan(hosts []string, ports string, timeout int64) []string {
+	// 解析端口和排除端口
+	portList := Common.ParsePort(ports)
+	if len(portList) == 0 {
+		Common.LogError("无效端口: " + ports)
+		return nil
+	}
+
+	exclude := make(map[int]struct{})
+	for _, p := range Common.ParsePort(Common.ExcludePorts) {
+		exclude[p] = struct{}{}
+	}
+
+	// 初始化超时设置
+	to := time.Duration(timeout) * time.Second
+
+	// 使用更大的线程池（学习gogo）
+	threadNum := Common.ThreadNum
+	if threadNum < 100 {
+		threadNum = 100 // gogo默认使用较大的线程池
+	}
+
+	var count int64
+	var aliveMap sync.Map
+
+	// 按端口批量扫描（gogo的端口喷洒策略）
+	Common.LogInfo("使用gogo风格端口喷洒模式扫描...")
+
+	for _, port := range portList {
+		if _, excluded := exclude[port]; excluded {
+			continue
+		}
+
+		// 为每个端口创建独立的扫描批次
+		portStartTime := time.Now()
+		portCount := scanSinglePortBatch(hosts, port, to, &aliveMap, &count, threadNum)
+
+		if portCount > 0 {
+			elapsed := time.Since(portStartTime)
+			Common.LogInfo(fmt.Sprintf("端口 %d 扫描完成，发现 %d 个开放服务，耗时 %v",
+				port, portCount, elapsed))
+		}
+	}
+
+	// 收集结果
+	var aliveAddrs []string
+	aliveMap.Range(func(key, _ interface{}) bool {
+		aliveAddrs = append(aliveAddrs, key.(string))
+		return true
+	})
+
+	Common.LogBase(fmt.Sprintf("gogo风格扫描完成, 发现 %d 个开放端口", count))
+	return aliveAddrs
+}
+
+// scanSinglePortBatch 批量扫描单个端口的所有主机
+func scanSinglePortBatch(hosts []string, port int, timeout time.Duration,
+	aliveMap *sync.Map, totalCount *int64, threadNum int) int64 {
+
+	var portCount int64
+	var wg sync.WaitGroup
+
+	// 创建任务通道（学习gogo的channel分发）
+	taskCh := make(chan string, threadNum*2)
+
+	// 启动工作协程池
+	for i := 0; i < threadNum; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for host := range taskCh {
+				if scanPortWithOptimization(host, port, timeout, aliveMap, &portCount) {
+					atomic.AddInt64(totalCount, 1)
+				}
+			}
+		}()
+	}
+
+	// 分发任务
+	go func() {
+		for _, host := range hosts {
+			taskCh <- host
+		}
+		close(taskCh)
+	}()
+
+	wg.Wait()
+	return portCount
+}
+
+// scanPortWithOptimization 优化的单端口扫描
+func scanPortWithOptimization(host string, port int, timeout time.Duration,
+	aliveMap *sync.Map, portCount *int64) bool {
+
+	addr := fmt.Sprintf("%s:%d", host, port)
+
+	// 1. TCP连接测试
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false
+	}
+
+	// 记录开放端口
+	atomic.AddInt64(portCount, 1)
+	aliveMap.Store(addr, struct{}{})
+
+	// 2. 快速服务识别（复用连接）
+	var result *GogoFingerResult
+	if Common.EnableFingerprint {
+		result = OptimizedIdentifyService(host, port, conn, timeout)
+	}
+
+	// 关闭连接
+	conn.Close()
+
+	// 3. 输出结果
+	if Common.EnableFingerprint && result != nil {
+		protocol := result.Protocol
+		if protocol == "" {
+			protocol = "tcp"
+		}
+
+		serviceInfo := result.FormatResult()
+		Common.LogInfo(fmt.Sprintf("[+] %s://%s  %s", protocol, addr, serviceInfo))
+
+		// 保存详细结果
+		details := map[string]interface{}{
+			"port":       port,
+			"service":    result.Service,
+			"confidence": result.Confidence,
+			"type":       result.FingerType,
+			"protocol":   protocol,
+		}
+
+		if result.Product != "" {
+			details["product"] = result.Product
+		}
+		if result.Version != "" {
+			details["version"] = result.Version
+		}
+		if result.Banner != "" {
+			details["banner"] = strings.TrimSpace(result.Banner)
+		}
+		for k, v := range result.ExtraInfo {
+			if v != "" {
+				details[k] = v
+			}
+		}
+
+		Common.SaveResult(&Common.ScanResult{
+			Time: time.Now(), Type: Common.SERVICE, Target: host,
+			Status: "identified", Details: details,
+		})
+	} else {
+		Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+	}
+
+	return true
+}
+
+// performProtocolProbing 执行协议探测 - 已被gogo风格指纹识别替代
+// 此函数保留用于向后兼容，但建议使用 IdentifyService
 func performProtocolProbing(host string, port int) (string, string) {
-	// === 指纹识别调用已暂时注释 ===
-	// // 使用新的gogo风格指纹识别
-	// if result := IdentifyService(host, port, 5*time.Second); result != nil {
-	//     return result.Banner, result.Service
-	// }
+	// 使用新的gogo风格指纹识别
+	if result := IdentifyService(host, port, 5*time.Second); result != nil {
+		return result.Banner, result.Service
+	}
 	return "", "unknown"
 }
 

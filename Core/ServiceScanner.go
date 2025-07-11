@@ -93,8 +93,11 @@ func (s *ServiceScanStrategy) discoverAlivePorts(hosts []string) []string {
 
 	// 根据扫描模式选择端口扫描方式
 	if len(hosts) > 0 {
-		// 使用快速端口扫描 + Banner检测（学习gogo）
-		if Common.EnableEnhancedPortScan {
+		// 优先使用gogo风格的端口喷洒扫描（性能最佳）
+		if Common.EnableGogoStyle {
+			alivePorts = GogoStylePortScan(hosts, Common.Ports, Common.Timeout)
+			Common.LogBase(fmt.Sprintf("gogo风格扫描完成，存活端口数量: %d", len(alivePorts)))
+		} else if Common.EnableEnhancedPortScan {
 			// 使用增强端口扫描（包含完整的Banner和协议检测）
 			alivePorts = NewEnhancedPortScan(hosts, Common.Ports, Common.Timeout)
 		} else {

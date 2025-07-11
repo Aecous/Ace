@@ -384,6 +384,13 @@ var i18nMap = map[string]map[string]string{
 		LangRU: "Включить идентификацию отпечатков сервисов в стиле gogo (включено по умолчанию)",
 	},
 
+	"flag_enable_gogo_style": {
+		LangZH: "启用gogo风格端口喷洒扫描(高性能模式)",
+		LangEN: "Enable gogo-style port spray scanning (high performance mode)",
+		LangJA: "gogo風格のポートスプレースキャンを有効化(高性能モード)",
+		LangRU: "Включить сканирование портов в стиле gogo (высокопроизводительный режим)",
+	},
+
 	"flag_hosts_file": {
 		LangZH: "从文件中读取目标主机列表",
 		LangEN: "Read target host list from file",

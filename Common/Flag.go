@@ -82,6 +82,7 @@ func Flag(Info *HostInfo) {
 	flag.BoolVar(&DisablePing, "np", false, GetText("flag_disable_ping"))
 	flag.BoolVar(&UsePing, "ping", false, GetText("flag_use_ping"))
 	flag.BoolVar(&EnableFingerprint, "fingerprint", true, GetText("flag_enable_fingerprint"))
+	flag.BoolVar(&EnableDynamicProtocol, "dynamic", false, GetText("flag_enable_dynamic_protocol"))
 	flag.BoolVar(&LocalMode, "local", false, GetText("flag_local_mode"))
 
 	// ═════════════════════════════════════════════════

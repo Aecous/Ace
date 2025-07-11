@@ -184,27 +184,92 @@ func FastPortScanWithBanner(hosts []string, ports string, timeout int64) []strin
 				// 应用端口扫描专用的轻量级速率控制
 				Common.PortScanWait()
 
-				// 1. TCP连接测试
-				conn, err := net.DialTimeout("tcp", addr, to)
-				if err != nil {
-					// 端口关闭或网络错误，记录为正常结果（不是失败）
-					Common.PerfMonitor.RecordPacket(true)
-					return nil
-				}
-
 				// 记录开放端口和成功的网络连接
 				atomic.AddInt64(&count, 1)
 				aliveMap.Store(addr, struct{}{})
 				Common.PerfMonitor.RecordPacket(true)
 
-				// 优化的Gogo风格的端口和服务识别 - 复用连接
+				// 🚀 使用动态协议扫描 - 学习gogo/fscanx的自动协议识别
 				var result *GogoFingerResult
-				if Common.EnableFingerprint {
-					result = OptimizedIdentifyService(host, port, conn, to)
-				}
 
-				// 关闭连接
-				conn.Close()
+				if Common.EnableFingerprint {
+					// 检查是否启用动态协议识别
+					if Common.EnableDynamicProtocol {
+						Common.LogDebug(fmt.Sprintf("启用动态协议识别: %s", addr))
+						// 动态协议扫描：无需预设HTTP端口，自动识别协议
+						dynamicStart := time.Now()
+						dynamicResult := FastDynamicScan(host, port)
+						dynamicTime := time.Since(dynamicStart)
+
+						if dynamicResult != nil && dynamicResult.Open {
+							Common.LogDebug(fmt.Sprintf("动态协议识别成功: %s - 协议: %s, HTTP: %v (耗时: %v)",
+								addr, dynamicResult.Protocol, dynamicResult.IsHttp, dynamicTime))
+
+							// 转换为GogoFingerResult格式保持兼容性
+							result = &GogoFingerResult{
+								Service:    dynamicResult.Protocol,
+								Product:    "", // 可在后续版本中加入产品识别
+								Protocol:   dynamicResult.Protocol,
+								Port:       port,
+								Banner:     string(dynamicResult.Banner),
+								Confidence: 8,
+								ExtraInfo: map[string]string{
+									"status": dynamicResult.Status,
+								},
+								FingerType: "dynamic",
+							}
+
+							// HTTP特有信息
+							if dynamicResult.IsHttp {
+								result.Service = "http"
+								result.FingerType = "http"
+								result.ExtraInfo["title"] = dynamicResult.Title
+								result.ExtraInfo["server"] = dynamicResult.Server
+								result.ExtraInfo["status_code"] = dynamicResult.Status
+								Common.LogDebug(fmt.Sprintf("HTTP服务详情: %s - 标题: %s, 服务器: %s, 状态: %s",
+									addr, dynamicResult.Title, dynamicResult.Server, dynamicResult.Status))
+							}
+						} else {
+							Common.LogDebug(fmt.Sprintf("动态协议识别无结果: %s (耗时: %v)", addr, dynamicTime))
+						}
+					} else {
+						Common.LogDebug(fmt.Sprintf("动态协议识别已禁用: %s", addr))
+					}
+
+					// 如果动态扫描失败或未启用，回退到传统方式
+					if result == nil {
+						Common.LogDebug(fmt.Sprintf("回退到传统指纹识别: %s", addr))
+						// 建立连接进行传统指纹识别
+						conn, err := net.DialTimeout("tcp", addr, to)
+						if err != nil {
+							Common.LogDebug(fmt.Sprintf("传统指纹识别连接失败: %s - %v", addr, err))
+							Common.PerfMonitor.RecordPacket(true)
+							return nil
+						}
+						traditionalStart := time.Now()
+						result = OptimizedIdentifyService(host, port, conn, to)
+						traditionalTime := time.Since(traditionalStart)
+						conn.Close()
+
+						if result != nil {
+							Common.LogDebug(fmt.Sprintf("传统指纹识别成功: %s - 服务: %s (耗时: %v)",
+								addr, result.Service, traditionalTime))
+						} else {
+							Common.LogDebug(fmt.Sprintf("传统指纹识别无结果: %s (耗时: %v)", addr, traditionalTime))
+						}
+					}
+				} else {
+					Common.LogDebug(fmt.Sprintf("指纹识别已禁用，仅进行连接测试: %s", addr))
+					// 未启用指纹识别，只进行简单连接测试
+					conn, err := net.DialTimeout("tcp", addr, to)
+					if err != nil {
+						Common.LogDebug(fmt.Sprintf("简单连接测试失败: %s - %v", addr, err))
+						Common.PerfMonitor.RecordPacket(true)
+						return nil
+					}
+					conn.Close()
+					Common.LogDebug(fmt.Sprintf("简单连接测试成功: %s", addr))
+				}
 
 				if Common.EnableFingerprint {
 					if result != nil {
@@ -376,12 +441,19 @@ func scanPortWithOptimization(host string, port int, timeout time.Duration,
 	aliveMap *sync.Map, portCount *int64) bool {
 
 	addr := fmt.Sprintf("%s:%d", host, port)
+	Common.LogDebug(fmt.Sprintf("开始扫描端口: %s (超时: %v)", addr, timeout))
 
 	// 1. TCP连接测试
+	startTime := time.Now()
 	conn, err := net.DialTimeout("tcp", addr, timeout)
+	connectTime := time.Since(startTime)
+
 	if err != nil {
+		Common.LogDebug(fmt.Sprintf("端口连接失败: %s - %v (耗时: %v)", addr, err, connectTime))
 		return false
 	}
+
+	Common.LogDebug(fmt.Sprintf("端口连接成功: %s (耗时: %v)", addr, connectTime))
 
 	// 记录开放端口
 	atomic.AddInt64(portCount, 1)
@@ -390,11 +462,24 @@ func scanPortWithOptimization(host string, port int, timeout time.Duration,
 	// 2. 快速服务识别（复用连接）
 	var result *GogoFingerResult
 	if Common.EnableFingerprint {
+		Common.LogDebug(fmt.Sprintf("开始服务指纹识别: %s", addr))
+		fingerprintStart := time.Now()
 		result = OptimizedIdentifyService(host, port, conn, timeout)
+		fingerprintTime := time.Since(fingerprintStart)
+
+		if result != nil {
+			Common.LogDebug(fmt.Sprintf("指纹识别成功: %s - 服务: %s, 协议: %s, 置信度: %d (耗时: %v)",
+				addr, result.Service, result.Protocol, result.Confidence, fingerprintTime))
+		} else {
+			Common.LogDebug(fmt.Sprintf("指纹识别无结果: %s (耗时: %v)", addr, fingerprintTime))
+		}
+	} else {
+		Common.LogDebug(fmt.Sprintf("跳过指纹识别: %s (指纹识别已禁用)", addr))
 	}
 
 	// 关闭连接
 	conn.Close()
+	Common.LogDebug(fmt.Sprintf("连接已关闭: %s", addr))
 
 	// 3. 输出结果
 	if Common.EnableFingerprint && result != nil {
@@ -405,6 +490,7 @@ func scanPortWithOptimization(host string, port int, timeout time.Duration,
 
 		serviceInfo := result.FormatResult()
 		Common.LogInfo(fmt.Sprintf("[+] %s://%s  %s", protocol, addr, serviceInfo))
+		Common.LogDebug(fmt.Sprintf("服务结果格式化完成: %s - %s", addr, serviceInfo))
 
 		// 保存详细结果
 		details := map[string]interface{}{
@@ -434,10 +520,14 @@ func scanPortWithOptimization(host string, port int, timeout time.Duration,
 			Time: time.Now(), Type: Common.SERVICE, Target: host,
 			Status: "identified", Details: details,
 		})
+		Common.LogDebug(fmt.Sprintf("服务结果已保存: %s", addr))
 	} else {
 		Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+		Common.LogDebug(fmt.Sprintf("基础端口结果输出: %s (无指纹信息)", addr))
 	}
 
+	totalTime := time.Since(startTime)
+	Common.LogDebug(fmt.Sprintf("端口扫描完成: %s (总耗时: %v)", addr, totalTime))
 	return true
 }
 
@@ -711,18 +801,17 @@ func isHttpPort(port int) bool {
 	return false
 }
 
-// tryQuickHttpProbe 快速HTTP探测
+// tryQuickHttpProbe 快速HTTP探测 - 使用优化检测模块
 func tryQuickHttpProbe(host string, port int) (string, string) {
-	// 先尝试HTTP
-	if title := quickHttpRequest(host, port, "http"); title != "" {
-		return title, "http"
+	// 创建临时连接进行优化检测
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 1*time.Second)
+	if err != nil {
+		return "", "http"
 	}
 
-	// 再尝试HTTPS（对于443, 8443等端口）
-	if port == 443 || port == 8443 {
-		if title := quickHttpRequest(host, port, "https"); title != "" {
-			return title, "https"
-		}
+	// 使用优化的HTTP检测
+	if httpResult := OptimizedHttpDetect(host, port, conn); httpResult != nil && httpResult.Error == "" {
+		return httpResult.Title, httpResult.Protocol
 	}
 
 	return "", "http"

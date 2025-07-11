@@ -384,6 +384,13 @@ var i18nMap = map[string]map[string]string{
 		LangRU: "Включить идентификацию отпечатков сервисов в стиле gogo (включено по умолчанию)",
 	},
 
+	"flag_enable_dynamic_protocol": {
+		LangZH: "启用动态协议识别(学习gogo/fscanx，无需预设HTTP端口，自动识别协议)",
+		LangEN: "Enable dynamic protocol detection (learning from gogo/fscanx, auto-detect protocols without predefined HTTP ports)",
+		LangJA: "動的プロトコル検出を有効化(gogo/fscanxから学習、HTTP ポートを事前設定せずにプロトコルを自動識別)",
+		LangRU: "Включить динамическое обнаружение протоколов (изучение gogo/fscanx, автоматическое определение протоколов без предустановленных HTTP портов)",
+	},
+
 	"flag_enable_gogo_style": {
 		LangZH: "启用gogo风格端口喷洒扫描(高性能模式)",
 		LangEN: "Enable gogo-style port spray scanning (high performance mode)",

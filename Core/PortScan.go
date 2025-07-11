@@ -1,0 +1,606 @@
+package Core
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net"
+	"net/http"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/shadow1ng/fscan/Common"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
+)
+
+// EnhancedPortScan 高性能端口扫描函数
+func EnhancedPortScan(hosts []string, ports string, timeout int64) []string {
+	// 解析端口和排除端口
+	portList := Common.ParsePort(ports)
+	if len(portList) == 0 {
+		Common.LogError("无效端口: " + ports)
+		return nil
+	}
+
+	exclude := make(map[int]struct{})
+	for _, p := range Common.ParsePort(Common.ExcludePorts) {
+		exclude[p] = struct{}{}
+	}
+
+	// 初始化并发控制
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	to := time.Duration(timeout) * time.Second
+	sem := semaphore.NewWeighted(int64(Common.ThreadNum))
+	var count int64
+	var aliveMap sync.Map
+	g, ctx := errgroup.WithContext(ctx)
+
+	// 并发扫描所有目标
+	for _, host := range hosts {
+		for _, port := range portList {
+			if _, excluded := exclude[port]; excluded {
+				continue
+			}
+
+			host, port := host, port // 捕获循环变量
+			addr := fmt.Sprintf("%s:%d", host, port)
+
+			if err := sem.Acquire(ctx, 1); err != nil {
+				break
+			}
+
+			g.Go(func() error {
+				defer sem.Release(1)
+
+				// 连接测试
+				conn, err := net.DialTimeout("tcp", addr, to)
+				if err != nil {
+					return nil
+				}
+
+				// 记录开放端口
+				atomic.AddInt64(&count, 1)
+				aliveMap.Store(addr, struct{}{})
+
+				// 关闭连接
+				conn.Close()
+
+				// 简单的端口开放日志
+				Common.LogInfo(fmt.Sprintf("端口开放 %s", addr))
+
+				// 保存端口扫描结果
+				Common.SaveResult(&Common.ScanResult{
+					Time: time.Now(), Type: Common.PORT, Target: host,
+					Status: "open", Details: map[string]interface{}{"port": port},
+				})
+
+				// === 指纹识别模块已暂时注释 ===
+				// // 优化的Gogo风格服务指纹识别 - 复用连接避免重复
+				// var result *GogoFingerResult
+				// if Common.EnableFingerprint {
+				//     result = OptimizedIdentifyService(host, port, conn, to)
+				// }
+				//
+				// if result != nil {
+				//     // 构建结果详情
+				//     details := map[string]interface{}{
+				//         "port":       port,
+				//         "service":    result.Service,
+				//         "confidence": result.Confidence,
+				//         "type":       result.FingerType,
+				//     }
+				//
+				//     if result.Product != "" {
+				//         details["product"] = result.Product
+				//     }
+				//     if result.Version != "" {
+				//         details["version"] = result.Version
+				//     }
+				//     if result.Banner != "" {
+				//         details["banner"] = strings.TrimSpace(result.Banner)
+				//     }
+				//     for k, v := range result.ExtraInfo {
+				//         if v != "" {
+				//             details[k] = v
+				//         }
+				//     }
+				//
+				//     // 保存服务结果
+				//     Common.SaveResult(&Common.ScanResult{
+				//         Time: time.Now(), Type: Common.SERVICE, Target: host,
+				//         Status: "identified", Details: details,
+				//     })
+				//
+				//     // 记录服务信息 - 使用gogo风格的格式化输出
+				//     serviceInfo := result.FormatResult()
+				//     if serviceInfo != "" {
+				//         Common.LogInfo(fmt.Sprintf("服务识别 %s => %s", addr, serviceInfo))
+				//     }
+				// } else {
+				//     // 没有识别到服务，但端口开放
+				//     Common.LogInfo(fmt.Sprintf("端口开放 %s", addr))
+				// }
+
+				return nil
+			})
+		}
+	}
+
+	_ = g.Wait()
+
+	// 收集结果
+	var aliveAddrs []string
+	aliveMap.Range(func(key, _ interface{}) bool {
+		aliveAddrs = append(aliveAddrs, key.(string))
+		return true
+	})
+
+	Common.LogBase(fmt.Sprintf("扫描完成, 发现 %d 个开放端口", count))
+	return aliveAddrs
+}
+
+// FastPortScanWithBanner 快速端口扫描+Banner检测 - 学习gogo的高效方式
+func FastPortScanWithBanner(hosts []string, ports string, timeout int64) []string {
+	// 解析端口和排除端口
+	portList := Common.ParsePort(ports)
+	if len(portList) == 0 {
+		Common.LogError("无效端口: " + ports)
+		return nil
+	}
+
+	exclude := make(map[int]struct{})
+	for _, p := range Common.ParsePort(Common.ExcludePorts) {
+		exclude[p] = struct{}{}
+	}
+
+	// 初始化并发控制
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	to := time.Duration(timeout) * time.Second
+	sem := semaphore.NewWeighted(int64(Common.ThreadNum))
+	var count int64
+	var aliveMap sync.Map
+	g, ctx := errgroup.WithContext(ctx)
+
+	// 并发扫描所有目标
+	for _, host := range hosts {
+		for _, port := range portList {
+			if _, excluded := exclude[port]; excluded {
+				continue
+			}
+
+			host, port := host, port // 捕获循环变量
+			addr := fmt.Sprintf("%s:%d", host, port)
+
+			if err := sem.Acquire(ctx, 1); err != nil {
+				break
+			}
+
+			g.Go(func() error {
+				defer sem.Release(1)
+
+				// 应用端口扫描专用的轻量级速率控制
+				Common.PortScanWait()
+
+				// 1. TCP连接测试
+				conn, err := net.DialTimeout("tcp", addr, to)
+				if err != nil {
+					// 端口关闭或网络错误，记录为正常结果（不是失败）
+					Common.PerfMonitor.RecordPacket(true)
+					return nil
+				}
+
+				// 记录开放端口和成功的网络连接
+				atomic.AddInt64(&count, 1)
+				aliveMap.Store(addr, struct{}{})
+				Common.PerfMonitor.RecordPacket(true)
+
+				// 关闭连接
+				conn.Close()
+
+				// 简单的端口开放输出
+				Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+
+				// === 指纹识别模块已暂时注释 ===
+				// // 优化的Gogo风格的端口和服务识别 - 复用连接
+				// var result *GogoFingerResult
+				// if Common.EnableFingerprint {
+				//     result = OptimizedIdentifyService(host, port, conn, to)
+				// }
+				//
+				// if Common.EnableFingerprint {
+				//     if result != nil {
+				//         // gogo风格输出: [+] tcp://host:port  focus:service:status  [open] response [ info: ... ]
+				//         serviceInfo := result.FormatResult()
+				//         Common.LogInfo(fmt.Sprintf("[+] tcp://%s  %s", addr, serviceInfo))
+				//
+				//         // 构建详细结果数据
+				//         details := map[string]interface{}{
+				//             "port":       port,
+				//             "service":    result.Service,
+				//             "confidence": result.Confidence,
+				//             "type":       result.FingerType,
+				//         }
+				//
+				//         if result.Product != "" {
+				//             details["product"] = result.Product
+				//         }
+				//         if result.Version != "" {
+				//             details["version"] = result.Version
+				//         }
+				//         if result.Banner != "" {
+				//             details["banner"] = strings.TrimSpace(result.Banner)
+				//         }
+				//         for k, v := range result.ExtraInfo {
+				//             if v != "" {
+				//                 details[k] = v
+				//             }
+				//         }
+				//
+				//         // 保存服务结果
+				//         Common.SaveResult(&Common.ScanResult{
+				//             Time: time.Now(), Type: Common.SERVICE, Target: host,
+				//             Status: "identified", Details: details,
+				//         })
+				//     } else {
+				//         // 没有识别到服务，但端口开放 - 类似gogo的简单输出
+				//         Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+				//     }
+				// } else {
+				//     // 未启用指纹识别时的基础输出
+				//     Common.LogInfo(fmt.Sprintf("[+] tcp://%s  [open]", addr))
+				// }
+
+				// 基础端口记录（保持原有功能）
+				Common.SaveResult(&Common.ScanResult{
+					Time: time.Now(), Type: Common.PORT, Target: host,
+					Status: "open", Details: map[string]interface{}{"port": port},
+				})
+
+				return nil
+			})
+		}
+	}
+
+	_ = g.Wait()
+
+	// 收集结果
+	var aliveAddrs []string
+	aliveMap.Range(func(key, _ interface{}) bool {
+		aliveAddrs = append(aliveAddrs, key.(string))
+		return true
+	})
+
+	Common.LogBase(fmt.Sprintf("快速扫描完成, 发现 %d 个开放端口", count))
+	return aliveAddrs
+}
+
+// performProtocolProbing 执行协议探测 - 指纹识别已暂时注释
+// 此函数保留用于向后兼容
+func performProtocolProbing(host string, port int) (string, string) {
+	// === 指纹识别调用已暂时注释 ===
+	// // 使用新的gogo风格指纹识别
+	// if result := IdentifyService(host, port, 5*time.Second); result != nil {
+	//     return result.Banner, result.Service
+	// }
+	return "", "unknown"
+}
+
+// isJDWPPort 检查是否为JDWP端口
+func isJDWPPort(port int) bool {
+	jdwpPorts := []int{5005, 8000, 8787, 9999, 18000}
+	for _, p := range jdwpPorts {
+		if port == p {
+			return true
+		}
+	}
+	return false
+}
+
+// probeJDWP 探测JDWP协议
+func probeJDWP(host string, port int) (string, string) {
+	Common.LogDebug(fmt.Sprintf("开始JDWP探测: %s:%d", host, port))
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 2*time.Second)
+	if err != nil {
+		Common.LogDebug(fmt.Sprintf("JDWP连接失败: %s:%d - %v", host, port, err))
+		return "", ""
+	}
+	defer conn.Close()
+
+	// 方法1: 标准JDWP握手
+	handshakeRequest := []byte("JDWP-Handshake")
+	conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+
+	_, err = conn.Write(handshakeRequest)
+	if err != nil {
+		Common.LogDebug(fmt.Sprintf("JDWP发送握手失败: %s:%d - %v", host, port, err))
+		// 连接成功但写入失败，可能是JDWP但配置异常
+		return "JDWP可能存在(写入失败)", "jdwp"
+	}
+
+	// 读取响应
+	response := make([]byte, 256)
+	n, err := conn.Read(response)
+	if err != nil {
+		Common.LogDebug(fmt.Sprintf("JDWP读取响应失败: %s:%d - %v", host, port, err))
+		// 能连接但无响应，在常见JDWP端口上很可能是JDWP
+		if isCommonJDWPPort(port) {
+			Common.LogInfo(fmt.Sprintf("疑似JDWP服务(无响应): %s:%d", host, port))
+			return "JDWP疑似(无握手响应)", "jdwp"
+		}
+		return "", ""
+	}
+
+	if n == 0 {
+		Common.LogDebug(fmt.Sprintf("JDWP收到空响应: %s:%d", host, port))
+		if isCommonJDWPPort(port) {
+			return "JDWP疑似(空响应)", "jdwp"
+		}
+		return "", ""
+	}
+
+	responseStr := string(response[:n])
+	Common.LogDebug(fmt.Sprintf("JDWP收到响应: %s:%d - [%s] (长度:%d)", host, port, responseStr, n))
+
+	// 检查标准JDWP握手响应
+	if responseStr == "JDWP-Handshake" {
+		Common.LogError(fmt.Sprintf("发现JDWP未授权访问: %s:%d", host, port))
+		return "JDWP-Handshake", "jdwp"
+	}
+
+	// 检查响应是否包含JDWP特征
+	if strings.Contains(strings.ToLower(responseStr), "jdwp") {
+		Common.LogInfo(fmt.Sprintf("发现JDWP服务: %s:%d - %s", host, port, responseStr))
+		return responseStr, "jdwp"
+	}
+
+	// 方法2: 尝试JDWP版本命令
+	if tryJDWPVersionCommand(conn, host, port) {
+		return "JDWP服务(版本命令响应)", "jdwp"
+	}
+
+	Common.LogDebug(fmt.Sprintf("JDWP握手失败，响应不匹配: %s:%d", host, port))
+	return "", ""
+}
+
+// isCommonJDWPPort 检查是否为常见JDWP端口
+func isCommonJDWPPort(port int) bool {
+	commonPorts := []int{5005, 8000} // 最常见的JDWP端口
+	for _, p := range commonPorts {
+		if port == p {
+			return true
+		}
+	}
+	return false
+}
+
+// tryJDWPVersionCommand 尝试发送JDWP版本命令
+func tryJDWPVersionCommand(conn net.Conn, host string, port int) bool {
+	// JDWP版本命令包
+	versionCmd := []byte{
+		0x00, 0x00, 0x00, 0x0B, // 长度: 11字节
+		0x00, 0x00, 0x00, 0x01, // ID: 1
+		0x00,       // 标志: 0
+		0x01, 0x01, // 命令集: 1, 命令: 1 (VirtualMachine.Version)
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+
+	_, err := conn.Write(versionCmd)
+	if err != nil {
+		Common.LogDebug(fmt.Sprintf("JDWP版本命令发送失败: %s:%d - %v", host, port, err))
+		return false
+	}
+
+	response := make([]byte, 256)
+	n, err := conn.Read(response)
+	if err != nil || n < 11 {
+		Common.LogDebug(fmt.Sprintf("JDWP版本命令响应失败: %s:%d - %v", host, port, err))
+		return false
+	}
+
+	// 检查JDWP响应格式
+	if n >= 11 && response[8] == 0x80 { // 检查reply标志
+		Common.LogInfo(fmt.Sprintf("JDWP版本命令成功: %s:%d", host, port))
+		return true
+	}
+
+	return false
+}
+
+// sendProbeAndGetResponse 发送探测包并获取响应
+func sendProbeAndGetResponse(host string, port int, payload []byte) string {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 2*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+
+	// 设置超时
+	conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+
+	// 发送探测数据
+	if len(payload) > 0 {
+		_, err = conn.Write(payload)
+		if err != nil {
+			return ""
+		}
+	}
+
+	// 读取响应
+	buffer := make([]byte, 1024)
+	n, err := conn.Read(buffer)
+	if err != nil || n == 0 {
+		return ""
+	}
+
+	return strings.TrimSpace(string(buffer[:n]))
+}
+
+// identifyServiceFromBanner 从Banner快速识别服务类型
+func identifyServiceFromBanner(banner string, port int) string {
+	bannerLower := strings.ToLower(banner)
+
+	// JDWP检测 - 完全基于Banner内容，不依赖端口号
+	if strings.Contains(bannerLower, "jdwp-handshake") {
+		return "jdwp"
+	}
+
+	// 常见服务特征识别
+	if strings.Contains(bannerLower, "ssh") {
+		return "ssh"
+	}
+	if strings.Contains(bannerLower, "ftp") {
+		return "ftp"
+	}
+	if strings.Contains(bannerLower, "mysql") {
+		return "mysql"
+	}
+	if strings.Contains(bannerLower, "microsoft-iis") {
+		return "http"
+	}
+	if strings.Contains(bannerLower, "apache") {
+		return "http"
+	}
+	if strings.Contains(bannerLower, "nginx") {
+		return "http"
+	}
+	if strings.Contains(bannerLower, "redis") {
+		return "redis"
+	}
+	if strings.Contains(bannerLower, "mongodb") {
+		return "mongodb"
+	}
+	if strings.Contains(bannerLower, "smtp") || strings.Contains(bannerLower, "postfix") {
+		return "smtp"
+	}
+	if strings.Contains(bannerLower, "pop3") {
+		return "pop3"
+	}
+	if strings.Contains(bannerLower, "imap") {
+		return "imap"
+	}
+	if strings.Contains(bannerLower, "telnet") {
+		return "telnet"
+	}
+
+	// 基于端口的默认识别（但不包括JDWP，JDWP只通过协议探测识别）
+	switch port {
+	case 21:
+		return "ftp"
+	case 22:
+		return "ssh"
+	case 23:
+		return "telnet"
+	case 25, 587, 465:
+		return "smtp"
+	case 53:
+		return "dns"
+	case 80, 8000, 8080, 8081, 8090:
+		return "http"
+	case 110:
+		return "pop3"
+	case 143:
+		return "imap"
+	case 443, 8443:
+		return "https"
+	case 445:
+		return "smb"
+	case 993:
+		return "imaps"
+	case 995:
+		return "pop3s"
+	case 1433:
+		return "mssql"
+	case 1521:
+		return "oracle"
+	case 3306:
+		return "mysql"
+	case 3389:
+		return "rdp"
+	case 5432:
+		return "postgresql"
+	case 6379:
+		return "redis"
+	case 9200:
+		return "elasticsearch"
+	case 27017:
+		return "mongodb"
+	default:
+		return "tcp"
+	}
+}
+
+// isHttpPort 判断是否为HTTP端口
+func isHttpPort(port int) bool {
+	httpPorts := []int{80, 443, 8000, 8080, 8081, 8090, 8443, 9000, 7001, 8001, 8008}
+	for _, p := range httpPorts {
+		if port == p {
+			return true
+		}
+	}
+	return false
+}
+
+// tryQuickHttpProbe 快速HTTP探测
+func tryQuickHttpProbe(host string, port int) (string, string) {
+	// 先尝试HTTP
+	if title := quickHttpRequest(host, port, "http"); title != "" {
+		return title, "http"
+	}
+
+	// 再尝试HTTPS（对于443, 8443等端口）
+	if port == 443 || port == 8443 {
+		if title := quickHttpRequest(host, port, "https"); title != "" {
+			return title, "https"
+		}
+	}
+
+	return "", "http"
+}
+
+// quickHttpRequest 快速HTTP请求获取标题
+func quickHttpRequest(host string, port int, scheme string) string {
+	url := fmt.Sprintf("%s://%s:%d/", scheme, host, port)
+
+	client := &http.Client{
+		Timeout: 2 * time.Second, // 2秒超时
+		Transport: &http.Transport{
+			TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+			ResponseHeaderTimeout: 1 * time.Second,
+		},
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	// 读取HTML内容提取标题
+	buffer := make([]byte, 4096) // 只读前4KB
+	n, _ := resp.Body.Read(buffer)
+	content := string(buffer[:n])
+
+	// 提取标题
+	titleRegex := regexp.MustCompile(`<title[^>]*>([^<]+)</title>`)
+	matches := titleRegex.FindStringSubmatch(content)
+	if len(matches) > 1 {
+		title := strings.TrimSpace(matches[1])
+		if len(title) > 50 {
+			title = title[:50] + "..."
+		}
+		return title
+	}
+
+	return ""
+}

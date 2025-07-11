@@ -1,0 +1,43 @@
+# 编译产物
+fscan
+fscan_test
+fscan_enhanced
+*.exe
+*.out
+
+# Go 相关
+vendor/
+*.mod.backup
+*.sum.backup
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE 文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 结果文件
+result.txt
+*.log
+output/
+
+# 临时文件
+temp/
+tmp/
+*.tmp
+
+# 二进制文件和外部工具
+gogo_*
+参考/
+
+# 测试文件
+test_* 
+
+
+# 参考文库
+参考/
